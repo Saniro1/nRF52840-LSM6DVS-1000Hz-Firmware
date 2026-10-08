@@ -1,0 +1,6 @@
+{
+  "name": "Firmware Reverse Engineering Analyzer",
+  "description": "Deep reverse engineering analysis tool and interactive explorer for ARM Cortex-M RP2040 decompiled firmware, mapping LittleFS, BMI160 IMU, USB stack, and multicore primitives.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

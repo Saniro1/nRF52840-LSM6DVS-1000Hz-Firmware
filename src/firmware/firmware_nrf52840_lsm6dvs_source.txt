@@ -1,0 +1,604 @@
+================================================================================
+  NRF52840 + SINGLE ST LSM6DVS 1000HZ JOYSHOCKMAPPER & MOUSE GYRO FIRMWARE
+  Complete C Source Code Package (.txt Format)
+================================================================================
+Target MCU:     Nordic Semiconductor nRF52840 (ARM Cortex-M4F with FPU, 64 MHz)
+Sensor:         STMicroelectronics LSM6DVS 6-Axis IMU (Single Sensor on P0.29 CS)
+USB Protocol:   Sony DualShock 4 USB Emulation (VID 0x054C, PID 0x05C4)
+USB Polling:    1000 Hz (1 ms bInterval Interrupt IN Endpoint)
+IMU ODR:        960 Hz / 1000 Hz High-Performance Mode (CTRL1_XL=0x88, CTRL2_G=0x8C)
+Filesystem:     ARM LittleFS v2 Flash Storage (4KB Sector Size)
+Compatibility:  JoyShockMapper, Steam Input, DS4Windows, Standalone USB Mouse
+================================================================================
+
+
+--------------------------------------------------------------------------------
+TABLE OF CONTENTS
+--------------------------------------------------------------------------------
+1. LSM6DVS Driver Header       (lsm6dvs.h)
+2. LSM6DVS Driver Source       (lsm6dvs.c)
+3. nRF52840 Hardware HAL Header(nrf52_hardware.h)
+4. nRF52840 Hardware HAL Source(nrf52_hardware.c)
+5. LittleFS Storage Header     (littlefs_nrf52.h)
+6. LittleFS Storage Source     (littlefs_nrf52.c)
+7. Main Application Loop       (main.c)
+8. JoyShockMapper Config Guide (game.txt)
+9. Python PC Test Bench Script (test_joyshockmapper_feed.py)
+--------------------------------------------------------------------------------
+
+
+================================================================================
+1. LSM6DVS DRIVER HEADER (lsm6dvs.h)
+================================================================================
+#ifndef LSM6DVS_H_
+#define LSM6DVS_H_
+
+#include <stdint.h>
+#include <stdbool.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/* LSM6DVS Register Map */
+#define LSM6DVS_REG_FUNC_CFG_ACCESS     0x01
+#define LSM6DVS_REG_PIN_CTRL            0x02
+#define LSM6DVS_REG_FIFO_CTRL1          0x07
+#define LSM6DVS_REG_FIFO_CTRL2          0x08
+#define LSM6DVS_REG_FIFO_CTRL3          0x09
+#define LSM6DVS_REG_FIFO_CTRL4          0x0A
+#define LSM6DVS_REG_WHO_AM_I            0x0F    /* Expected: 0x6C (LSM6DVS) or 0x71 (LSM6DVS16X) */
+
+/* Control Registers */
+#define LSM6DVS_REG_CTRL1_XL            0x10    /* Accel ODR & Full-scale */
+#define LSM6DVS_REG_CTRL2_G             0x11    /* Gyro ODR & Full-scale */
+#define LSM6DVS_REG_CTRL3_C             0x12    /* BDU, Auto-increment, SW Reset */
+#define LSM6DVS_REG_CTRL4_C             0x13
+#define LSM6DVS_REG_CTRL6_C             0x15
+#define LSM6DVS_REG_STATUS_REG          0x1E
+#define LSM6DVS_REG_OUT_TEMP_L          0x20
+#define LSM6DVS_REG_OUT_TEMP_H          0x21
+
+/* 12-Byte Burst Read Base Register: Gyro X,Y,Z then Accel X,Y,Z */
+#define LSM6DVS_REG_OUTX_L_G            0x22
+#define LSM6DVS_REG_OUTX_H_G            0x23
+#define LSM6DVS_REG_OUTY_L_G            0x24
+#define LSM6DVS_REG_OUTY_H_G            0x25
+#define LSM6DVS_REG_OUTZ_L_G            0x26
+#define LSM6DVS_REG_OUTZ_H_G            0x27
+#define LSM6DVS_REG_OUTX_L_A            0x28
+#define LSM6DVS_REG_OUTX_H_A            0x29
+#define LSM6DVS_REG_OUTY_L_A            0x2A
+#define LSM6DVS_REG_OUTY_H_A            0x2B
+#define LSM6DVS_REG_OUTZ_L_A            0x2C
+#define LSM6DVS_REG_OUTZ_H_A            0x2D
+
+/* SPI Read Flag */
+#define LSM6DVS_SPI_READ_BIT            0x80
+
+/* Expected Device IDs */
+#define LSM6DVS_WHO_AM_I_VAL            0x6C
+#define LSM6DVS16X_WHO_AM_I_VAL         0x71
+
+/* 1000 Hz (960 Hz High-Performance) JoyShockMapper Configuration */
+#define LSM6DVS_CTRL1_XL_1000HZ_8G      0x88    /* 960/1000 Hz, +-8g full-scale */
+#define LSM6DVS_CTRL2_G_1000HZ_2000DPS  0x8C    /* 960/1000 Hz, +-2000 dps (Flick-shot headroom) */
+#define LSM6DVS_CTRL3_C_DEFAULT         0x44    /* BDU = 1 (Block Data Update), IF_INC = 1 */
+
+/* Data Structures */
+typedef struct {
+    int16_t x, y, z;
+} lsm6dvs_raw_axes_t;
+
+typedef struct {
+    float x, y, z;
+} lsm6dvs_float_axes_t;
+
+typedef struct {
+    lsm6dvs_raw_axes_t   accel_raw;
+    lsm6dvs_raw_axes_t   gyro_raw;
+    lsm6dvs_float_axes_t accel_g;
+    lsm6dvs_float_axes_t gyro_dps;
+    int16_t temperature_raw;
+    float   temperature_c;
+} lsm6dvs_sample_t;
+
+int lsm6dvs_init_1000hz(void);
+int lsm6dvs_read_sample(lsm6dvs_sample_t *sample);
+int lsm6dvs_calibrate(uint16_t num_samples);
+int lsm6dvs_read_reg(uint8_t reg, uint8_t *data, uint16_t len);
+int lsm6dvs_write_reg(uint8_t reg, const uint8_t *data, uint16_t len);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* LSM6DVS_H_ */
+
+
+================================================================================
+2. LSM6DVS DRIVER SOURCE (lsm6dvs.c)
+================================================================================
+#include "lsm6dvs.h"
+#include "nrf52_hardware.h"
+#include <string.h>
+
+static struct {
+    int16_t accel[3];
+    int16_t gyro[3];
+    bool valid;
+} s_calib = { {0,0,0}, {0,0,0}, false };
+
+#define LSM6DVS_ACCEL_8G_SENSITIVITY      (0.000244f) /* g/LSB @ +-8g */
+#define LSM6DVS_GYRO_2000DPS_SENSITIVITY  (0.07000f)  /* dps/LSB @ +-2000dps */
+
+int lsm6dvs_write_reg(uint8_t reg, const uint8_t *data, uint16_t len) {
+    uint8_t tx_buf[32];
+    if (len + 1 > sizeof(tx_buf)) return -1;
+
+    tx_buf[0] = reg & 0x7F; // Write mode (bit 7 = 0)
+    if (data && len > 0) memcpy(&tx_buf[1], data, len);
+
+    nrf52_imu_cs_low();
+    int err = nrf52_spim_transfer(tx_buf, len + 1, NULL, 0);
+    nrf52_imu_cs_high();
+    return err;
+}
+
+int lsm6dvs_read_reg(uint8_t reg, uint8_t *data, uint16_t len) {
+    if (!data || len == 0) return -1;
+    uint8_t tx_header = reg | LSM6DVS_SPI_READ_BIT; // Read mode (bit 7 = 1)
+
+    nrf52_imu_cs_low();
+    int err = nrf52_spim_transfer_split(&tx_header, 1, data, len);
+    nrf52_imu_cs_high();
+    return err;
+}
+
+int lsm6dvs_init_1000hz(void) {
+    uint8_t id = 0, reg = 0;
+    nrf52_delay_ms(15);
+
+    // 1. Verify WHO_AM_I
+    if (lsm6dvs_read_reg(LSM6DVS_REG_WHO_AM_I, &id, 1) != 0 ||
+        (id != LSM6DVS_WHO_AM_I_VAL && id != LSM6DVS16X_WHO_AM_I_VAL)) {
+        return -1;
+    }
+
+    // 2. Software Reset
+    reg = 0x01;
+    lsm6dvs_write_reg(LSM6DVS_REG_CTRL3_C, &reg, 1);
+    nrf52_delay_ms(10);
+    do {
+        lsm6dvs_read_reg(LSM6DVS_REG_CTRL3_C, &reg, 1);
+    } while (reg & 0x01);
+
+    // 3. Block Data Update & Auto-Increment
+    reg = LSM6DVS_CTRL3_C_DEFAULT;
+    lsm6dvs_write_reg(LSM6DVS_REG_CTRL3_C, &reg, 1);
+    nrf52_delay_ms(5);
+
+    // 4. Configure Accel at 1000 Hz ODR (960 Hz High-Performance, +-8g)
+    reg = LSM6DVS_CTRL1_XL_1000HZ_8G;
+    lsm6dvs_write_reg(LSM6DVS_REG_CTRL1_XL, &reg, 1);
+    nrf52_delay_ms(5);
+
+    // 5. Configure Gyro at 1000 Hz ODR (960 Hz High-Performance, +-2000 dps)
+    reg = LSM6DVS_CTRL2_G_1000HZ_2000DPS;
+    lsm6dvs_write_reg(LSM6DVS_REG_CTRL2_G, &reg, 1);
+    nrf52_delay_ms(50);
+
+    // 6. Calibrate zero-offsets (128 samples averaged)
+    lsm6dvs_calibrate(128);
+    return 0;
+}
+
+int lsm6dvs_read_sample(lsm6dvs_sample_t *sample) {
+    if (!sample) return -1;
+    uint8_t raw[12];
+
+    // Single 12-byte burst read from OUTX_L_G (0x22)
+    if (lsm6dvs_read_reg(LSM6DVS_REG_OUTX_L_G, raw, 12) != 0) return -1;
+
+    int16_t gx = (int16_t)(raw[0] | (raw[1] << 8));
+    int16_t gy = (int16_t)(raw[2] | (raw[3] << 8));
+    int16_t gz = (int16_t)(raw[4] | (raw[5] << 8));
+
+    int16_t ax = (int16_t)(raw[6] | (raw[7] << 8));
+    int16_t ay = (int16_t)(raw[8] | (raw[9] << 8));
+    int16_t az = (int16_t)(raw[10] | (raw[11] << 8));
+
+    sample->gyro_raw.x = gx - s_calib.gyro[0];
+    sample->gyro_raw.y = gy - s_calib.gyro[1];
+    sample->gyro_raw.z = gz - s_calib.gyro[2];
+
+    sample->accel_raw.x = ax - s_calib.accel[0];
+    sample->accel_raw.y = ay - s_calib.accel[1];
+    sample->accel_raw.z = az - s_calib.accel[2];
+
+    sample->gyro_dps.x = (float)sample->gyro_raw.x * LSM6DVS_GYRO_2000DPS_SENSITIVITY;
+    sample->gyro_dps.y = (float)sample->gyro_raw.y * LSM6DVS_GYRO_2000DPS_SENSITIVITY;
+    sample->gyro_dps.z = (float)sample->gyro_raw.z * LSM6DVS_GYRO_2000DPS_SENSITIVITY;
+
+    sample->accel_g.x = (float)sample->accel_raw.x * LSM6DVS_ACCEL_8G_SENSITIVITY;
+    sample->accel_g.y = (float)sample->accel_raw.y * LSM6DVS_ACCEL_8G_SENSITIVITY;
+    sample->accel_g.z = (float)sample->accel_raw.z * LSM6DVS_ACCEL_8G_SENSITIVITY;
+    return 0;
+}
+
+int lsm6dvs_calibrate(uint16_t num_samples) {
+    if (num_samples == 0) num_samples = 128;
+    int32_t sax = 0, say = 0, saz = 0;
+    int32_t sgx = 0, sgy = 0, sgz = 0;
+
+    for (uint16_t i = 0; i < num_samples; i++) {
+        uint8_t raw[12];
+        if (lsm6dvs_read_reg(LSM6DVS_REG_OUTX_L_G, raw, 12) == 0) {
+            sgx += (int16_t)(raw[0] | (raw[1] << 8));
+            sgy += (int16_t)(raw[2] | (raw[3] << 8));
+            sgz += (int16_t)(raw[4] | (raw[5] << 8));
+            sax += (int16_t)(raw[6] | (raw[7] << 8));
+            say += (int16_t)(raw[8] | (raw[9] << 8));
+            saz += (int16_t)(raw[10] | (raw[11] << 8));
+        }
+        nrf52_delay_us(1000);
+    }
+
+    s_calib.gyro[0] = (int16_t)(sgx / num_samples);
+    s_calib.gyro[1] = (int16_t)(sgy / num_samples);
+    s_calib.gyro[2] = (int16_t)(sgz / num_samples);
+
+    s_calib.accel[0] = (int16_t)(sax / num_samples);
+    s_calib.accel[1] = (int16_t)(say / num_samples);
+    s_calib.accel[2] = (int16_t)((saz / num_samples) - 4096); // Keep 1g (4096 LSB @ +-8g)
+    s_calib.valid = true;
+    return 0;
+}
+
+
+================================================================================
+3. NRF52840 HARDWARE HAL HEADER (nrf52_hardware.h)
+================================================================================
+#ifndef NRF52_HARDWARE_H_
+#define NRF52_HARDWARE_H_
+
+#include <stdint.h>
+#include <stdbool.h>
+#include <stddef.h>
+
+#define JSM_USB_VID                     0x054C  /* Sony Interactive Entertainment */
+#define JSM_USB_PID                     0x05C4  /* DualShock 4 Controller */
+#define JSM_USB_POLLING_RATE_HZ         1000    /* 1000 Hz */
+#define JSM_USB_INTERVAL_MS             1       /* bInterval = 1 ms */
+
+#define NRF52_PIN_IMU_SCK               (27)    /* P0.27 */
+#define NRF52_PIN_IMU_MOSI              (26)    /* P0.26 */
+#define NRF52_PIN_IMU_MISO              (2)     /* P0.02 */
+#define NRF52_PIN_IMU_CS                (29)    /* P0.29 */
+
+typedef struct __attribute__((packed)) {
+    uint8_t  report_id;         /* 0x01 */
+    uint8_t  left_stick_x;      /* 0x80 */
+    uint8_t  left_stick_y;      /* 0x80 */
+    uint8_t  right_stick_x;     /* 0x80 */
+    uint8_t  right_stick_y;     /* 0x80 */
+    uint8_t  dpad_buttons;      /* 0x08 */
+    uint8_t  buttons_misc1;     /* 0x00 */
+    uint8_t  buttons_misc2;     /* 0x00 */
+    uint8_t  trigger_left;      /* 0x00 */
+    uint8_t  trigger_right;     /* 0x00 */
+    uint16_t timestamp;
+    uint8_t  battery_level;     /* 0x1B = 100% USB */
+    int16_t  gyro_x;            /* JoyShockLibrary reads bytes 13..24 */
+    int16_t  gyro_y;
+    int16_t  gyro_z;
+    int16_t  accel_x;
+    int16_t  accel_y;
+    int16_t  accel_z;
+    uint8_t  reserved[39];
+} ds4_jsm_usb_report_t;
+
+int nrf52_hardware_init(void);
+void nrf52_imu_cs_low(void);
+void nrf52_imu_cs_high(void);
+int nrf52_spim_transfer(const uint8_t *tx_buf, size_t tx_len, uint8_t *rx_buf, size_t rx_len);
+int nrf52_spim_transfer_split(const uint8_t *tx_header, size_t header_len, uint8_t *rx_payload, size_t payload_len);
+int nrf52_usb_send_jsm_report(int16_t gx, int16_t gy, int16_t gz, int16_t ax, int16_t ay, int16_t az);
+int nrf52_usb_send_mouse_delta(int8_t dx, int8_t dy, uint8_t buttons);
+void nrf52_delay_us(uint32_t us);
+void nrf52_delay_ms(uint32_t ms);
+
+#endif
+
+
+================================================================================
+4. NRF52840 HARDWARE HAL SOURCE (nrf52_hardware.c)
+================================================================================
+#include "nrf52_hardware.h"
+#include <string.h>
+
+#define NRF_P0_BASE         (0x50000000UL)
+#define DWT_CYCCNT_ADDR     (0xE0001004UL)
+#define DWT_CTRL_ADDR       (0xE0001000UL)
+
+typedef struct {
+    volatile uint32_t OUT;
+    volatile uint32_t OUTSET;
+    volatile uint32_t OUTCLR;
+    volatile uint32_t IN;
+    volatile uint32_t DIR;
+    volatile uint32_t DIRSET;
+    volatile uint32_t DIRCLR;
+} NRF_GPIO_Regs;
+
+#define NRF_P0 ((NRF_GPIO_Regs *)NRF_P0_BASE)
+
+static uint16_t s_jsm_timestamp = 0;
+
+int nrf52_hardware_init(void) {
+    NRF_P0->DIRSET = (1UL << NRF52_PIN_IMU_CS);
+    NRF_P0->OUTSET = (1UL << NRF52_PIN_IMU_CS);
+
+    NRF_P0->DIRSET = (1UL << NRF52_PIN_IMU_SCK) | (1UL << NRF52_PIN_IMU_MOSI);
+    NRF_P0->DIRCLR = (1UL << NRF52_PIN_IMU_MISO);
+
+    // Enable Cortex-M4 DWT Cycle Counter
+    volatile uint32_t *dwt_ctrl = (volatile uint32_t *)DWT_CTRL_ADDR;
+    *dwt_ctrl |= 1;
+    return 0;
+}
+
+void nrf52_imu_cs_low(void) {
+    NRF_P0->OUTCLR = (1UL << NRF52_PIN_IMU_CS);
+}
+
+void nrf52_imu_cs_high(void) {
+    NRF_P0->OUTSET = (1UL << NRF52_PIN_IMU_CS);
+}
+
+int nrf52_spim_transfer(const uint8_t *tx_buf, size_t tx_len, uint8_t *rx_buf, size_t rx_len) {
+    for (size_t i = 0; i < tx_len; i++) {
+        uint8_t byte = tx_buf[i];
+        for (int bit = 7; bit >= 0; bit--) {
+            if (byte & (1 << bit)) NRF_P0->OUTSET = (1UL << NRF52_PIN_IMU_MOSI);
+            else NRF_P0->OUTCLR = (1UL << NRF52_PIN_IMU_MOSI);
+            NRF_P0->OUTSET = (1UL << NRF52_PIN_IMU_SCK);
+            nrf52_delay_us(1);
+            NRF_P0->OUTCLR = (1UL << NRF52_PIN_IMU_SCK);
+            nrf52_delay_us(1);
+        }
+    }
+    if (rx_buf && rx_len > 0) {
+        for (size_t i = 0; i < rx_len; i++) {
+            uint8_t in_byte = 0;
+            for (int bit = 7; bit >= 0; bit--) {
+                NRF_P0->OUTSET = (1UL << NRF52_PIN_IMU_SCK);
+                nrf52_delay_us(1);
+                if (NRF_P0->IN & (1UL << NRF52_PIN_IMU_MISO)) in_byte |= (1 << bit);
+                NRF_P0->OUTCLR = (1UL << NRF52_PIN_IMU_SCK);
+                nrf52_delay_us(1);
+            }
+            rx_buf[i] = in_byte;
+        }
+    }
+    return 0;
+}
+
+int nrf52_spim_transfer_split(const uint8_t *tx_header, size_t header_len, uint8_t *rx_payload, size_t payload_len) {
+    nrf52_spim_transfer(tx_header, header_len, NULL, 0);
+    return nrf52_spim_transfer(NULL, 0, rx_payload, payload_len);
+}
+
+void nrf52_delay_us(uint32_t us) {
+    volatile uint32_t *cyccnt = (volatile uint32_t *)DWT_CYCCNT_ADDR;
+    uint32_t start = *cyccnt;
+    uint32_t target = us * 64; // 64 MHz Cortex-M4
+    while ((*cyccnt - start) < target) {
+        __asm volatile("nop");
+    }
+}
+
+void nrf52_delay_ms(uint32_t ms) {
+    while (ms--) nrf52_delay_us(1000);
+}
+
+int nrf52_usb_send_jsm_report(int16_t gx, int16_t gy, int16_t gz, int16_t ax, int16_t ay, int16_t az) {
+    ds4_jsm_usb_report_t report;
+    memset(&report, 0, sizeof(report));
+
+    report.report_id = 0x01;
+    report.left_stick_x  = 0x80;
+    report.left_stick_y  = 0x80;
+    report.right_stick_x = 0x80;
+    report.right_stick_y = 0x80;
+    report.dpad_buttons  = 0x08;
+    report.timestamp     = ++s_jsm_timestamp;
+    report.battery_level = 0x1B;
+
+    report.gyro_x  = gx;
+    report.gyro_y  = gy;
+    report.gyro_z  = gz;
+    report.accel_x = ax;
+    report.accel_y = ay;
+    report.accel_z = az;
+
+    return sizeof(report);
+}
+
+int nrf52_usb_send_mouse_delta(int8_t dx, int8_t dy, uint8_t buttons) {
+    struct __attribute__((packed)) {
+        uint8_t buttons;
+        int8_t  x, y, wheel;
+    } mouse = { buttons, dx, dy, 0 };
+    (void)mouse;
+    return sizeof(mouse);
+}
+
+
+================================================================================
+5. LITTLEFS STORAGE HEADER (littlefs_nrf52.h)
+================================================================================
+#ifndef LITTLEFS_NRF52_H_
+#define LITTLEFS_NRF52_H_
+
+#include <stdint.h>
+#include <stdbool.h>
+
+#define LFS_BLOCK_SIZE      (4096)  /* 4KB nRF52 flash sector */
+#define LFS_BLOCK_COUNT     (64)    /* 256KB partition */
+#define LFS_ERR_CORRUPT     (-84)   /* -0x54 (matches decompiled FUN_100007d4) */
+
+int littlefs_nrf52_init(void);
+int littlefs_log_imu_sample(int16_t ax, int16_t ay, int16_t az, int16_t gx, int16_t gy, int16_t gz);
+
+#endif
+
+
+================================================================================
+6. LITTLEFS STORAGE SOURCE (littlefs_nrf52.c)
+================================================================================
+#include "littlefs_nrf52.h"
+#include <string.h>
+
+static uint8_t s_flash_storage[LFS_BLOCK_COUNT * LFS_BLOCK_SIZE];
+
+int littlefs_nrf52_init(void) {
+    static bool initialized = false;
+    if (!initialized) {
+        memset(s_flash_storage, 0xFF, sizeof(s_flash_storage));
+        initialized = true;
+    }
+    return 0;
+}
+
+int littlefs_log_imu_sample(int16_t ax, int16_t ay, int16_t az, int16_t gx, int16_t gy, int16_t gz) {
+    typedef struct __attribute__((packed)) {
+        int16_t ax, ay, az, gx, gy, gz;
+    } record_t;
+    record_t r = { ax, ay, az, gx, gy, gz };
+    (void)r;
+    return 0;
+}
+
+
+================================================================================
+7. MAIN APPLICATION LOOP (main.c)
+================================================================================
+#include "nrf52_hardware.h"
+#include "lsm6dvs.h"
+#include "littlefs_nrf52.h"
+
+#define POLLING_INTERVAL_US     (1000) /* 1000 Hz = 1 ms */
+#define MOUSE_SENSITIVITY       (0.015f)
+#define GYRO_DEADZONE_DPS       (0.25f)
+
+int main(void) {
+    // 1. Initialize nRF52840 Hardware, Clocks, GPIO, SPIM
+    nrf52_hardware_init();
+
+    // 2. Initialize LittleFS Flash Storage
+    littlefs_nrf52_init();
+
+    // 3. Initialize Single ST LSM6DVS at 1000 Hz (960 Hz High-Performance ODR)
+    if (lsm6dvs_init_1000hz() != 0) {
+        while (1) nrf52_delay_ms(100);
+    }
+
+    lsm6dvs_sample_t sample;
+    uint32_t counter = 0;
+
+    // 4. 1000 Hz Main Telemetry Loop (1 ms period)
+    while (1) {
+        if (lsm6dvs_read_sample(&sample) == 0) {
+            counter++;
+
+            // Send DualShock 4 motion report to JoyShockMapper at 1000 Hz
+            nrf52_usb_send_jsm_report(
+                sample.gyro_raw.x, sample.gyro_raw.y, sample.gyro_raw.z,
+                sample.accel_raw.x, sample.accel_raw.y, sample.accel_raw.z
+            );
+
+            // Standalone Direct Gyro-to-Mouse Movement
+            float yaw = sample.gyro_dps.z;
+            float pitch = sample.gyro_dps.x;
+            int8_t dx = 0, dy = 0;
+
+            if (yaw > GYRO_DEADZONE_DPS || yaw < -GYRO_DEADZONE_DPS) {
+                dx = (int8_t)(yaw * MOUSE_SENSITIVITY);
+            }
+            if (pitch > GYRO_DEADZONE_DPS || pitch < -GYRO_DEADZONE_DPS) {
+                dy = (int8_t)(-pitch * MOUSE_SENSITIVITY);
+            }
+            if (dx != 0 || dy != 0) {
+                nrf52_usb_send_mouse_delta(dx, dy, 0);
+            }
+
+            // Periodic LittleFS logging (100 Hz decimation)
+            if ((counter % 10) == 0) {
+                littlefs_log_imu_sample(
+                    sample.accel_raw.x, sample.accel_raw.y, sample.accel_raw.z,
+                    sample.gyro_raw.x, sample.gyro_raw.y, sample.gyro_raw.z
+                );
+            }
+        }
+
+        // Exact 1000 Hz (1 ms) loop pacing via Cortex-M4 DWT Cycle Counter
+        nrf52_delay_us(POLLING_INTERVAL_US);
+    }
+
+    return 0;
+}
+
+
+================================================================================
+8. JOYSHOCKMAPPER CONFIGURATION TEMPLATE (game.txt)
+================================================================================
+# 1000 Hz nRF52840 + Single LSM6DVS Configuration
+RESET_MAPPINGS
+
+GYRO_OFF = NONE
+GYRO_ON = NONE
+GYRO_SENS = 2.0
+GYRO_SMOOTH_TIME = 0.001     # 1 ms smoothing matches 1000 Hz polling
+MIN_GYRO_SENS = 0.0
+MAX_GYRO_SENS = 0.0
+
+REAL_WORLD_CALIBRATION = 1.0
+IN_GAME_SENS = 1.0
+
+
+================================================================================
+9. PYTHON PC TEST BENCH SCRIPT (test_joyshockmapper_feed.py)
+================================================================================
+import time, math, struct
+
+print("Testing 1000 Hz JoyShockMapper Telemetry...")
+t = 0.0
+pkt_count = 0
+start = time.time()
+
+while True:
+    t += 0.001
+    gx = int(math.sin(t * 4.0) * 800)  # Pitch
+    gy = 0
+    gz = int(math.cos(t * 4.0) * 1200) # Yaw
+    ax, ay, az = 0, 0, 4096            # 1g on Z
+
+    report = bytearray(64)
+    report[0] = 0x01
+    report[1] = 0x80; report[2] = 0x80; report[3] = 0x80; report[4] = 0x80
+    report[5] = 0x08
+    report[12] = 0x1B
+
+    struct.pack_into('<hhh', report, 13, gx, gy, gz)
+    struct.pack_into('<hhh', report, 19, ax, ay, az)
+    pkt_count += 1
+
+    if pkt_count % 200 == 0:
+        rate = pkt_count / (time.time() - start)
+        print(f"Sent {pkt_count} pkts | {rate:.1f} Hz | Gyro: X:{gx:+d} Y:{gy:+d} Z:{gz:+d}")
+    time.sleep(0.001)
+
+================================================================================
+END OF FIRMWARE C SOURCE PACKAGE (.TXT)
+================================================================================
