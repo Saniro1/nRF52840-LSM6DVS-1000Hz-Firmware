@@ -42,6 +42,10 @@ static const PinDesc CANDIDATES[8] = {
     { "P1.11 (D14)", 1, 11, NRF_GPIO_PIN_MAP(1, 11) }
 };
 
+// Forward declarations
+void print_copy_paste_config_i2c(int sda_i, int scl_i, uint8_t addr, int int1_i, int int2_i);
+void print_copy_paste_config_spi(int sck_i, int mosi_i, int miso_i, int cs_i, int int1_i, int int2_i);
+
 // Reset all 8 candidate pins to high-impedance inputs
 static void reset_candidate_pins() {
     for (int i = 0; i < 8; i++) {

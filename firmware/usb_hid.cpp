@@ -73,8 +73,8 @@ USBMotionDevice::USBMotionDevice() : _packet_counter(0) {
 bool USBMotionDevice::begin() {
     // Set USB Vendor and Product ID
     TinyUSBDevice.setID(USB_VID, USB_PID);
-    TinyUSBDevice.setManufacturer(USB_MANUFACTURER_NAME);
-    TinyUSBDevice.setProduct(USB_PRODUCT_NAME);
+    TinyUSBDevice.setManufacturerDescriptor(USB_MANUFACTURER_NAME);
+    TinyUSBDevice.setProductDescriptor(USB_PRODUCT_NAME);
 
     // Configure 1000 Hz polling rate (bInterval = 1 ms)
     usb_hid.setPollInterval(1);
