@@ -8,6 +8,7 @@
  */
 
 #include <Arduino.h>
+#include <Adafruit_TinyUSB.h>
 #include <nrf_gpio.h>
 
 // Board power switch: P0.13 controls VCC cutoff. Drive HIGH to enable power to IMU!
