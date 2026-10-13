@@ -39,6 +39,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install adafruit-nrfutil
           curl -sSL https://raw.githubusercontent.com/microsoft/uf2/master/utils/uf2conv.py -o uf2conv.py
+          curl -sSL https://raw.githubusercontent.com/microsoft/uf2/master/utils/uf2families.json -o uf2families.json
 
       - name: Install Arduino CLI
         run: |
